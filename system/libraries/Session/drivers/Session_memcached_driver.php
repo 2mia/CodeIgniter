@@ -29,8 +29,8 @@
  * @package	CodeIgniter
  * @author	EllisLab Dev Team
  * @copyright	Copyright (c) 2008 - 2014, EllisLab, Inc. (https://ellislab.com/)
- * @copyright	Copyright (c) 2014 - 2018, British Columbia Institute of Technology (https://bcit.ca/)
- * @license	https://opensource.org/licenses/MIT	MIT License
+ * @copyright	Copyright (c) 2014 - 2018, British Columbia Institute of Technology (http://bcit.ca/)
+ * @license	http://opensource.org/licenses/MIT	MIT License
  * @link	https://codeigniter.com
  * @since	Version 3.0.0
  * @filesource
@@ -68,6 +68,8 @@ class CI_Session_memcached_driver extends CI_Session_driver implements SessionHa
 	 * @var	string
 	 */
 	protected $_lock_key;
+
+	protected $_key_exists = FALSE;
 
 	// ------------------------------------------------------------------------
 
@@ -167,7 +169,10 @@ class CI_Session_memcached_driver extends CI_Session_driver implements SessionHa
 			// Needed by write() to detect session_regenerate_id() calls
 			$this->_session_id = $session_id;
 
-			$session_data = (string) $this->_memcached->get($this->_key_prefix.$session_id);
+			$session_data = $this->_memcached->get($this->_key_prefix.$session_id);
+			is_string($session_data)
+                		? $this->_key_exists = TRUE
+                		: $session_data = '';
 			$this->_fingerprint = md5($session_data);
 			return $session_data;
 		}
@@ -190,6 +195,9 @@ class CI_Session_memcached_driver extends CI_Session_driver implements SessionHa
 	{
 		if ( ! isset($this->_memcached, $this->_lock_key))
 		{
+			if ($this->_session_id === "" or $this->_session_id === NULL)
+				log_message('error', "faking write on close empty session [$this->_lock_key] [".$this->_session_id."]");
+				return $this->_success;
 			return $this->_fail();
 		}
 		// Was the ID regenerated?
@@ -200,21 +208,25 @@ class CI_Session_memcached_driver extends CI_Session_driver implements SessionHa
 				return $this->_fail();
 			}
 
-			$this->_fingerprint = md5('');
+			#$this->_fingerprint = md5('');
+			$this->_key_exists = FALSE;
 			$this->_session_id = $session_id;
 		}
 
 		$key = $this->_key_prefix.$session_id;
 
 		$this->_memcached->replace($this->_lock_key, time(), 300);
-		if ($this->_fingerprint !== ($fingerprint = md5($session_data)))
+		#if ($this->_fingerprint !== ($fingerprint = md5($session_data)))
+		if ($this->_fingerprint !== ($fingerprint = md5($session_data)) OR $this->_key_exists === FALSE)
 		{
 			if ($this->_memcached->set($key, $session_data, $this->_config['expiration']))
 			{
 				$this->_fingerprint = $fingerprint;
+				$this->_key_exists = TRUE;
 				return $this->_success;
 			}
 
+			log_message('error', "failed $key 1");
 			return $this->_fail();
 		}
 		elseif (
@@ -225,6 +237,7 @@ class CI_Session_memcached_driver extends CI_Session_driver implements SessionHa
 			return $this->_success;
 		}
 
+		log_message('error', "failed $key 2");
 		return $this->_fail();
 	}
 
@@ -343,15 +356,22 @@ class CI_Session_memcached_driver extends CI_Session_driver implements SessionHa
 		{
 			if ($this->_memcached->get($lock_key))
 			{
-				sleep(1);
+				usleep(2*100000); #0.2 seconds
 				continue;
 			}
 
 			$method = ($this->_memcached->getResultCode() === Memcached::RES_NOTFOUND) ? 'add' : 'set';
 			if ( ! $this->_memcached->$method($lock_key, time(), 300))
 			{
-				log_message('error', 'Session: Error while trying to obtain lock for '.$this->_key_prefix.$session_id);
-				return FALSE;
+				//log_message('error', 'Session: Error while trying to obtain lock for '.$this->_key_prefix.$session_id);
+				#log_message('error', json_encode(debug_backtrace()));
+				if ($attempt > 5) #if trying more than 1 second
+				   log_message('error', 'Session: Error while trying to obtain lock for '.$this->_key_prefix.$session_id." method:$method $lock_key");
+				usleep(2*100000); #0.2 seconds
+				continue;#return FALSE;
+			}else{
+				if ($attempt > 5)
+				    log_message('error', "i got the lock $method $lock_key");
 			}
 
 			$this->_lock_key = $lock_key;
